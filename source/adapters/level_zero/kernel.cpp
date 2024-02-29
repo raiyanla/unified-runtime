@@ -195,6 +195,8 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
   UR_CALL(TmpWaitList.createAndRetainUrZeEventList(
       NumEventsInWaitList, EventWaitList, Queue, UseCopyEngine));
 
+  fprintf(stderr, "TmpWaitList.Length = %d\n", TmpWaitList.Length);
+
   // Get a new command list to be used on this call
   ur_command_list_ptr_t CommandList{};
   UR_CALL(Queue->Context->getAvailableCommandList(
@@ -214,8 +216,8 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
   // the code can do a urKernelRelease on this kernel.
   (*Event)->CommandData = (void *)Kernel;
 
-  // Increment the reference count of the Kernel and indicate that the Kernel is
-  // in use. Once the event has been signalled, the code in
+  // Increment the reference count of the Kernel and indicate that the Kernel
+  // is in use. Once the event has been signalled, the code in
   // CleanupCompletedEvent(Event) will do a urKernelRelease to update the
   // reference count on the kernel, using the kernel saved in CommandData.
   UR_CALL(urKernelRetain(Kernel));

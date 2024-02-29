@@ -1189,6 +1189,23 @@ ur_result_t _ur_ze_event_list_t::createAndRetainUrZeEventList(
       CurQueue->LastCommandEvent && CurQueue->LastCommandEvent->IsDiscarded)
     IncludeLastCommandEvent = false;
 
+  if (CurQueue->Device->useDriverInOrderLists()) {
+    auto QueueGroup = CurQueue->getQueueGroup(UseCopyEngine);
+    uint32_t QueueGroupOrdinal, QueueIndex;
+    auto NextIndex = QueueGroup.getQueueIndex(&QueueGroupOrdinal, &QueueIndex,
+                                              /*QueryOnly */ true);
+    auto NextImmCmdList = QueueGroup.ImmCmdLists[NextIndex];
+
+    // If we are using L0 native implementation for handling in-order queues,
+    // then we don't need to add the last enqueued event into the waitlist, as
+    // the native driver implementation will already ensure in-order semantics.
+    // The only exception is when a different immediate command was last used on
+    // the same UR Queue.
+    IncludeLastCommandEvent &=
+        CurQueue->LastUsedCommandList != CurQueue->CommandListMap.end() &&
+        NextImmCmdList != CurQueue->LastUsedCommandList;
+  }
+
   try {
     uint32_t TmpListLength = 0;
 
@@ -1203,6 +1220,27 @@ ur_result_t _ur_ze_event_list_t::createAndRetainUrZeEventList(
     } else if (EventListLength > 0) {
       this->ZeEventList = new ze_event_handle_t[EventListLength];
       this->UrEventList = new ur_event_handle_t[EventListLength];
+    }
+
+    auto WaitListEmptyOrAllEventsFromSameQueue = [CurQueue, EventListLength,
+                                                  EventList]() {
+      if (!EventListLength)
+        return true;
+
+      for (uint32_t i = 0; i < EventListLength; ++i) {
+        if (CurQueue != EventList[i]->UrQueue)
+          return false;
+      }
+
+      return true;
+    };
+
+    // For in-order queue and wait-list which is empty or has events only from
+    // the same queue then we don't need to wait on any other additional events
+    if (CurQueue->Device->useDriverInOrderLists() &&
+        CurQueue->isInOrderQueue() && WaitListEmptyOrAllEventsFromSameQueue()) {
+      this->Length = TmpListLength;
+      return UR_RESULT_SUCCESS;
     }
 
     if (EventListLength > 0) {
