@@ -647,8 +647,10 @@ ur_result_t ur_context_handle_t_::getAvailableCommandList(
     ur_queue_handle_t Queue, ur_command_list_ptr_t &CommandList,
     bool UseCopyEngine, bool AllowBatching,
     ze_command_queue_handle_t *ForcedCmdQueue) {
+  fprintf(stderr, "getAvailableCommandList A\n");
   // Immediate commandlists have been pre-allocated and are always available.
   if (Queue->UsingImmCmdLists) {
+  fprintf(stderr, "getAvailableCommandList B\n");
     CommandList = Queue->getQueueGroup(UseCopyEngine).getImmCmdList();
     if (CommandList->second.EventList.size() >
         ImmCmdListsEventCleanupThreshold) {
@@ -661,6 +663,7 @@ ur_result_t ur_context_handle_t_::getAvailableCommandList(
       return Res;
     return UR_RESULT_SUCCESS;
   } else {
+  fprintf(stderr, "getAvailableCommandList C\n");
     // Cleanup regular command-lists if there are too many.
     // It handles the case that the queue is not synced to the host
     // for a long time and we want to reclaim the command-lists for
@@ -676,6 +679,7 @@ ur_result_t ur_context_handle_t_::getAvailableCommandList(
   // First see if there is an command-list open for batching commands
   // for this queue.
   if (Queue->hasOpenCommandList(UseCopyEngine)) {
+  fprintf(stderr, "getAvailableCommandList D\n");
     if (AllowBatching) {
       CommandList = CommandBatch.OpenCommandList;
       UR_CALL(Queue->insertStartBarrierIfDiscardEventsMode(CommandList));
@@ -755,6 +759,7 @@ ur_result_t ur_context_handle_t_::getAvailableCommandList(
       return UR_RESULT_SUCCESS;
     }
   }
+  fprintf(stderr, "getAvailableCommandList E\n");
 
   // If there are no available command lists in the cache, then we check for
   // command lists that have already signalled, but have not been added to the
@@ -782,6 +787,7 @@ ur_result_t ur_context_handle_t_::getAvailableCommandList(
       return UR_RESULT_SUCCESS;
     }
   }
+  fprintf(stderr, "getAvailableCommandList F\n");
 
   // If there are no available command lists nor signalled command lists,
   // then we must create another command list.

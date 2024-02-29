@@ -150,6 +150,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueEventsWaitWithBarrier(
 
   // Lock automatically releases when this goes out of scope.
   std::scoped_lock<ur_shared_mutex> lock(Queue->Mutex);
+  fprintf(stderr, "GOING THROUGH HERE\n");
 
   // Helper function for appending a barrier to a command list.
   auto insertBarrierIntoCmdList =

@@ -191,34 +191,80 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
   ZE2UR_CALL(zeKernelSetGroupSize, (ZeKernel, WG[0], WG[1], WG[2]));
 
   bool UseCopyEngine = false;
+
+  // Only create TmpList if any events in EventWaitList is found to be from
+  // another queue + isInOrderQueue() + L0 driver implementation
+  bool UseTmpWaitList = false;
+  fprintf(stderr, "NumEventsInWaitList = %d\n", NumEventsInWaitList);
+  if (Queue->Device->useDriverInOrderLists() && Queue->isInOrderQueue()) {
+#if 1
+    for (uint32_t i = 0; i < NumEventsInWaitList; i++) {
+        fprintf(stderr, "looping event\n");
+      auto EventQueue = EventWaitList[i]->UrQueue;
+      if (Queue != EventQueue) {
+        fprintf(stderr, "Found event on different queue\n");
+        UseTmpWaitList = true;
+        break;
+      }
+    }
+#endif
+    // Remove
+    //UseTmpWaitList = true;
+  } else {
+    UseTmpWaitList = true;
+  }
+  fprintf(stderr, "UseTmpWaitList = %d\n", UseTmpWaitList);
+  fprintf(stderr, "IsDiscardEvents = %d\n", Queue->isDiscardEvents());
+
   _ur_ze_event_list_t TmpWaitList;
-  UR_CALL(TmpWaitList.createAndRetainUrZeEventList(
-      NumEventsInWaitList, EventWaitList, Queue, UseCopyEngine));
+//  TmpWaitList.ZeEventList = nullptr;
+//  TmpWaitList.Length = 0;
+
+  if (UseTmpWaitList) {
+    UR_CALL(TmpWaitList.createAndRetainUrZeEventList(
+        NumEventsInWaitList, EventWaitList, Queue, UseCopyEngine));
+  }
 
   // Get a new command list to be used on this call
   ur_command_list_ptr_t CommandList{};
   UR_CALL(Queue->Context->getAvailableCommandList(
       Queue, CommandList, UseCopyEngine, true /* AllowBatching */));
 
+  if (Queue->LastUsedCommandList != Queue->CommandListMap.end() &&
+      CommandList->first != Queue->LastUsedCommandList->first) {
+    fprintf(stderr, "USING DIFFERNT COMMANDLIST on QUEUE\n");
+  }
+
   ze_event_handle_t ZeEvent = nullptr;
   ur_event_handle_t InternalEvent{};
   bool IsInternal = OutEvent == nullptr;
-  ur_event_handle_t *Event = OutEvent ? OutEvent : &InternalEvent;
+  ur_event_handle_t *Event = nullptr;
 
-  UR_CALL(createEventAndAssociateQueue(Queue, Event, UR_COMMAND_KERNEL_LAUNCH,
-                                       CommandList, IsInternal, false));
-  ZeEvent = (*Event)->ZeEvent;
-  (*Event)->WaitList = TmpWaitList;
+  //bool SkipOutputEventCreate = (Queue->Device->useDriverInOrderLists() &&
+  //                              TmpWaitList.Length == 0 && IsInternal);
 
-  // Save the kernel in the event, so that when the event is signalled
-  // the code can do a urKernelRelease on this kernel.
-  (*Event)->CommandData = (void *)Kernel;
+  //bool SkipOutputEventCreate = false;
 
-  // Increment the reference count of the Kernel and indicate that the Kernel is
-  // in use. Once the event has been signalled, the code in
-  // CleanupCompletedEvent(Event) will do a urKernelRelease to update the
-  // reference count on the kernel, using the kernel saved in CommandData.
-  UR_CALL(urKernelRetain(Kernel));
+//  if (!SkipOutputEventCreate) {
+    Event = OutEvent ? OutEvent : &InternalEvent;
+    UR_CALL(createEventAndAssociateQueue(Queue, Event, UR_COMMAND_KERNEL_LAUNCH,
+                                         CommandList, IsInternal, false));
+    ZeEvent = (*Event)->ZeEvent;
+
+    // If UseTmpWaitList is false, then it will leave TmpWaitList.ZeEventList as
+    // nullptr and TmpWaitList.Length as 0 (i.e. an empty WaitList)
+    (*Event)->WaitList = TmpWaitList;
+
+    // Save the kernel in the event, so that when the event is signalled
+    // the code can do a urKernelRelease on this kernel.
+    (*Event)->CommandData = (void *)Kernel;
+
+    // Increment the reference count of the Kernel and indicate that the Kernel
+    // is in use. Once the event has been signalled, the code in
+    // CleanupCompletedEvent(Event) will do a urKernelRelease to update the
+    // reference count on the kernel, using the kernel saved in CommandData.
+    UR_CALL(urKernelRetain(Kernel));
+ // }
 
   // Add to list of kernels to be submitted
   if (IndirectAccessTrackingEnabled)
@@ -239,6 +285,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
     ContextsLock.lock();
     Queue->CaptureIndirectAccesses();
     // Add the command to the command list, which implies submission.
+    fprintf(stderr, "ImmCommandList WaitList: %p, size: %lu\n", (*Event)->WaitList.ZeEventList, (*Event)->WaitList.Length);
     ZE2UR_CALL(zeCommandListAppendLaunchKernel,
                (CommandList->first, ZeKernel, &ZeThreadGroupDimensions, ZeEvent,
                 (*Event)->WaitList.Length, (*Event)->WaitList.ZeEventList));
@@ -247,15 +294,18 @@ UR_APIEXPORT ur_result_t UR_APICALL urEnqueueKernelLaunch(
     // No lock is needed here, unlike the immediate commandlist case above,
     // because the kernels are not actually submitted yet. Kernels will be
     // submitted only when the comamndlist is closed. Then, a lock is held.
+    fprintf(stderr, "RegularCommandList WaitList: %p, size: %lu\n", (*Event)->WaitList.ZeEventList, (*Event)->WaitList.Length);
     ZE2UR_CALL(zeCommandListAppendLaunchKernel,
                (CommandList->first, ZeKernel, &ZeThreadGroupDimensions, ZeEvent,
                 (*Event)->WaitList.Length, (*Event)->WaitList.ZeEventList));
   }
 
+//  if (Event) {
   urPrint("calling zeCommandListAppendLaunchKernel() with"
           "  ZeEvent %#" PRIxPTR "\n",
           ur_cast<std::uintptr_t>(ZeEvent));
   printZeEventList((*Event)->WaitList);
+  //}
 
   // Execute command list asynchronously, as the event will be used
   // to track down its completion.

@@ -1412,11 +1412,14 @@ ur_result_t ur_queue_handle_t_::synchronize() {
     if (ImmCmdList == Queue->CommandListMap.end())
       return UR_RESULT_SUCCESS;
 
+    fprintf(stderr, "syncImmCmdList A");
     // wait for all commands previously submitted to this immediate command list
     ZE2UR_CALL(zeCommandListHostSynchronize, (ImmCmdList->first, UINT64_MAX));
 
+    fprintf(stderr, "syncImmCmdList B");
     // Cleanup all events from the synced command list.
     CleanupEventListFromResetCmdList(ImmCmdList->second.EventList, true);
+    fprintf(stderr, "syncImmCmdList C");
     ImmCmdList->second.EventList.clear();
     return UR_RESULT_SUCCESS;
   };
@@ -1427,6 +1430,7 @@ ur_result_t ur_queue_handle_t_::synchronize() {
     // zero handle can have device scope, so we can't synchronize the last
     // event.
     if (isInOrderQueue() && !LastCommandEvent->IsDiscarded) {
+      fprintf(stderr, "FIRST BRANCH of synchronize()\n");
       ZE2UR_CALL(zeHostSynchronize, (LastCommandEvent->ZeEvent));
 
       // clean up all events known to have been completed as well,
@@ -1438,6 +1442,7 @@ ur_result_t ur_queue_handle_t_::synchronize() {
               if (ImmCmdList == this->CommandListMap.end())
                 continue;
               // Cleanup all events from the synced command list.
+      fprintf(stderr, "FIRST BRANCH of synchronize() | A\n");
               CleanupEventListFromResetCmdList(ImmCmdList->second.EventList,
                                                true);
               ImmCmdList->second.EventList.clear();
@@ -1446,10 +1451,12 @@ ur_result_t ur_queue_handle_t_::synchronize() {
         }
       }
     } else {
+      fprintf(stderr, "ELSE BRANCH of synchronize()\n");
       // Otherwise sync all L0 queues/immediate command-lists.
       for (auto &QueueMap : {ComputeQueueGroupsByTID, CopyQueueGroupsByTID}) {
         for (auto &QueueGroup : QueueMap) {
           if (UsingImmCmdLists) {
+      fprintf(stderr, "ELSE BRANCH of synchronize() | A\n");
             for (auto &ImmCmdList : QueueGroup.second.ImmCmdLists)
               UR_CALL(syncImmCmdList(this, ImmCmdList));
           } else {
@@ -1893,6 +1900,12 @@ ur_result_t ur_queue_handle_t_::createCommandList(
   ZeStruct<ze_command_list_desc_t> ZeCommandListDesc;
   ZeCommandListDesc.commandQueueGroupOrdinal = QueueGroupOrdinal;
 
+  fprintf(stderr, "INSIDE createCommandList(), useDriverLists: %d, isInOrderQueue: %d\n", Device->useDriverInOrderLists(), isInOrderQueue());
+  if (Device->useDriverInOrderLists() && isInOrderQueue()) {
+    fprintf(stderr, "creating in-order command list\n");
+    ZeCommandListDesc.flags = ZE_COMMAND_LIST_FLAG_IN_ORDER;
+  }
+
   ZE2UR_CALL(zeCommandListCreate, (Context->ZeContext, Device->ZeDevice,
                                    &ZeCommandListDesc, &ZeCommandList));
 
@@ -1990,6 +2003,17 @@ ur_command_list_ptr_t &ur_queue_handle_t_::ur_queue_group_t::getImmCmdList() {
   uint32_t QueueIndex, QueueOrdinal;
   auto Index = getQueueIndex(&QueueOrdinal, &QueueIndex);
 
+  fprintf(stderr, "getting immediate command list\n");
+
+  
+  if (ImmCmdLists[Index] != Queue->CommandListMap.end()) {
+    if (ImmCmdLists[Index]->second.ZeQueueDesc.flags == ZE_COMMAND_QUEUE_FLAG_IN_ORDER) {
+      fprintf(stderr, "FOUND in-order immediate command list\n");
+    } else {
+      fprintf(stderr, "FOUND regular immediate command list\n");
+    }
+  }
+
   if (ImmCmdLists[Index] != Queue->CommandListMap.end())
     return ImmCmdLists[Index];
 
@@ -2006,8 +2030,12 @@ ur_command_list_ptr_t &ur_queue_handle_t_::ur_queue_group_t::getImmCmdList() {
     Priority = "High";
   }
 
-  // Evaluate performance of explicit usage for "0" index.
-  if (QueueIndex != 0) {
+  if (Queue->Device->useDriverInOrderLists() && Queue->isInOrderQueue()) {
+    fprintf(stderr, "creating in-order immediate command list\n");
+    ZeCommandQueueDesc.flags = ZE_COMMAND_QUEUE_FLAG_IN_ORDER;
+    urPrint("Using in-order driver implementation\n");
+  } else if (QueueIndex != 0) {
+    // Evaluate performance of explicit usage for "0" index.
     ZeCommandQueueDesc.flags = ZE_COMMAND_QUEUE_FLAG_EXPLICIT_ONLY;
   }
 
