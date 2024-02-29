@@ -624,11 +624,13 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueFinish(
     ur_queue_handle_t UrQueue ///< [in] handle of the queue to be finished.
 ) {
   if (UrQueue->UsingImmCmdLists) {
+    fprintf(stderr, "urqueue finish A\n");
     // Lock automatically releases when this goes out of scope.
     std::scoped_lock<ur_shared_mutex> Lock(UrQueue->Mutex);
 
     UR_CALL(UrQueue->synchronize());
   } else {
+    fprintf(stderr, "urqueue finish B\n");
     std::unique_lock<ur_shared_mutex> Lock(UrQueue->Mutex);
     std::vector<ze_command_queue_handle_t> ZeQueues;
 
@@ -660,10 +662,12 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueFinish(
       Lock.unlock();
     }
 
+    fprintf(stderr, "urqueue finish C\n");
     for (auto &ZeQueue : ZeQueues) {
       if (ZeQueue)
         ZE2UR_CALL(zeHostSynchronize, (ZeQueue));
     }
+    fprintf(stderr, "urqueue finish D\n");
 
     // Prevent unneeded already finished events to show up in the wait list.
     // We can only do so if nothing else was submitted to the queue
@@ -681,6 +685,7 @@ UR_APIEXPORT ur_result_t UR_APICALL urQueueFinish(
   // available command lists. Events in the immediate command lists are cleaned
   // up in synchronize().
   if (!UrQueue->UsingImmCmdLists) {
+    fprintf(stderr, "urqueue finish E\n");
     std::unique_lock<ur_shared_mutex> Lock(UrQueue->Mutex);
     resetCommandLists(UrQueue);
   }
@@ -1161,7 +1166,9 @@ ur_queue_handle_t_::executeCommandList(ur_command_list_ptr_t CommandList,
           // treat this event as regular event. We insert a barrier in the next
           // command list to wait for this event.
           LastCommandEvent = HostVisibleEvent;
+          fprintf(stderr, "EXECUTE command lists A\n");
         } else {
+          fprintf(stderr, "EXECUTE command lists B\n");
           // For all other queues treat this as a special event and indicate no
           // cleanup is needed.
           // TODO: always treat this host event as a regular event.
@@ -1174,20 +1181,24 @@ ur_queue_handle_t_::executeCommandList(ur_command_list_ptr_t CommandList,
         // completion.
         if (doReuseDiscardedEvents() && LastCommandEvent &&
             LastCommandEvent->IsDiscarded) {
+          fprintf(stderr, "EXECUTE command lists C\n");
           // If we the last event is discarded then we already have a barrier
           // inserted, so just signal the event.
           ZE2UR_CALL(zeCommandListAppendSignalEvent,
                      (CommandList->first, HostVisibleEvent->ZeEvent));
         } else {
+          fprintf(stderr, "EXECUTE command lists D\n");
           ZE2UR_CALL(
               zeCommandListAppendBarrier,
               (CommandList->first, HostVisibleEvent->ZeEvent, 0, nullptr));
         }
       } else {
+          fprintf(stderr, "EXECUTE command lists E\n");
         // If we don't have host visible proxy then signal event if needed.
         this->signalEventFromCmdListIfLastEventDiscarded(CommandList);
       }
     } else {
+    //      fprintf(stderr, "EXECUTE command lists F\n");
       // If we don't have host visible proxy then signal event if needed.
       this->signalEventFromCmdListIfLastEventDiscarded(CommandList);
     }
@@ -1300,6 +1311,7 @@ void ur_queue_handle_t_::active_barriers::add(ur_event_handle_t &Event) {
 }
 
 ur_result_t ur_queue_handle_t_::active_barriers::clear() {
+  fprintf(stderr, "active-events clear()\n");
   for (const auto &Event : Events)
     UR_CALL(urEventReleaseInternal(Event));
   Events.clear();
@@ -1404,16 +1416,20 @@ ur_result_t CleanupEventListFromResetCmdList(
 // runtime. Need to investigate whether relase can be done earlier, at sync
 // points such as this, to reduce total number of active Events.
 ur_result_t ur_queue_handle_t_::synchronize() {
+  fprintf(stderr, "inside sync | A\n");
   if (!Healthy)
     return UR_RESULT_SUCCESS;
+  fprintf(stderr, "inside sync | B\n");
 
   auto syncImmCmdList = [](ur_queue_handle_t_ *Queue,
                            ur_command_list_ptr_t ImmCmdList) {
     if (ImmCmdList == Queue->CommandListMap.end())
       return UR_RESULT_SUCCESS;
 
+  fprintf(stderr, "inside sync | B\n");
     // wait for all commands previously submitted to this immediate command list
     ZE2UR_CALL(zeCommandListHostSynchronize, (ImmCmdList->first, UINT64_MAX));
+  fprintf(stderr, "inside sync | C\n");
 
     // Cleanup all events from the synced command list.
     CleanupEventListFromResetCmdList(ImmCmdList->second.EventList, true);
@@ -1421,13 +1437,32 @@ ur_result_t ur_queue_handle_t_::synchronize() {
     return UR_RESULT_SUCCESS;
   };
 
-  if (LastCommandEvent) {
+  if (Device->useDriverInOrderLists() && isInOrderQueue() &&
+      isDiscardEvents()) {
+    fprintf(stderr, "inside sync | CCCCCCCC\n");
+    for (auto &QueueMap : {ComputeQueueGroupsByTID, CopyQueueGroupsByTID}) {
+      for (auto &QueueGroup : QueueMap) {
+        if (UsingImmCmdLists) {
+          for (auto &ImmCmdList : QueueGroup.second.ImmCmdLists)
+            UR_CALL(syncImmCmdList(this, ImmCmdList));
+        } else {
+          for (auto &ZeQueue : QueueGroup.second.ZeQueues)
+            if (ZeQueue)
+              ZE2UR_CALL(zeHostSynchronize, (ZeQueue));
+        }
+      }
+    }
+  } else if (LastCommandEvent) {
     // For in-order queue just wait for the last command.
     // If event is discarded then it can be in reset state or underlying level
     // zero handle can have device scope, so we can't synchronize the last
     // event.
+  fprintf(stderr, "inside sync | D\n");
+
     if (isInOrderQueue() && !LastCommandEvent->IsDiscarded) {
+  fprintf(stderr, "inside sync | E\n");
       ZE2UR_CALL(zeHostSynchronize, (LastCommandEvent->ZeEvent));
+  fprintf(stderr, "inside sync | F\n");
 
       // clean up all events known to have been completed as well,
       // so they can be reused later
@@ -1446,6 +1481,7 @@ ur_result_t ur_queue_handle_t_::synchronize() {
         }
       }
     } else {
+  fprintf(stderr, "inside sync | G\n");
       // Otherwise sync all L0 queues/immediate command-lists.
       for (auto &QueueMap : {ComputeQueueGroupsByTID, CopyQueueGroupsByTID}) {
         for (auto &QueueGroup : QueueMap) {
@@ -1462,11 +1498,13 @@ ur_result_t ur_queue_handle_t_::synchronize() {
     }
     LastCommandEvent = nullptr;
   }
+  fprintf(stderr, "inside sync | J\n");
 
   // With the entire queue synchronized, the active barriers must be done so we
   // can remove them.
   if (auto Res = ActiveBarriers.clear())
     return Res;
+  fprintf(stderr, "inside sync | K\n");
 
   return UR_RESULT_SUCCESS;
 }
@@ -1611,10 +1649,13 @@ ur_result_t ur_queue_handle_t_::signalEventFromCmdListIfLastEventDiscarded(
     ur_command_list_ptr_t CommandList) {
   // We signal new event at the end of command list only if we have queue with
   // discard_events property and the last command event is discarded.
+  fprintf(stderr, "signaling!! A\n");
   if (!(doReuseDiscardedEvents() && LastCommandEvent &&
         LastCommandEvent->IsDiscarded))
     return UR_RESULT_SUCCESS;
 
+
+  fprintf(stderr, "signaling!! B\n");
   // NOTE: We create this "glue" event not as internal so it is not
   // participating in the discarded events reset/reuse logic, but
   // with no host-visibility since it is not going to be waited
@@ -1628,6 +1669,7 @@ ur_result_t ur_queue_handle_t_::signalEventFromCmdListIfLastEventDiscarded(
   UR_CALL(urEventReleaseInternal(Event));
   LastCommandEvent = Event;
 
+  fprintf(stderr, "signaling!! C\n");
   ZE2UR_CALL(zeCommandListAppendSignalEvent,
              (CommandList->first, Event->ZeEvent));
   return UR_RESULT_SUCCESS;
@@ -1893,6 +1935,10 @@ ur_result_t ur_queue_handle_t_::createCommandList(
   ZeStruct<ze_command_list_desc_t> ZeCommandListDesc;
   ZeCommandListDesc.commandQueueGroupOrdinal = QueueGroupOrdinal;
 
+  if (Device->useDriverInOrderLists() && isInOrderQueue()) {
+    ZeCommandListDesc.flags = ZE_COMMAND_LIST_FLAG_IN_ORDER;
+  }
+
   ZE2UR_CALL(zeCommandListCreate, (Context->ZeContext, Device->ZeDevice,
                                    &ZeCommandListDesc, &ZeCommandList));
 
@@ -2006,8 +2052,10 @@ ur_command_list_ptr_t &ur_queue_handle_t_::ur_queue_group_t::getImmCmdList() {
     Priority = "High";
   }
 
-  // Evaluate performance of explicit usage for "0" index.
-  if (QueueIndex != 0) {
+  if (Queue->Device->useDriverInOrderLists() && Queue->isInOrderQueue()) {
+    ZeCommandQueueDesc.flags = ZE_COMMAND_QUEUE_FLAG_IN_ORDER;
+  } else if (QueueIndex != 0) {
+    // Evaluate performance of explicit usage for "0" index.
     ZeCommandQueueDesc.flags = ZE_COMMAND_QUEUE_FLAG_EXPLICIT_ONLY;
   }
 
